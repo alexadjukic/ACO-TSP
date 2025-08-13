@@ -154,8 +154,7 @@ __global__ void initAntStatesKernel(int *antPaths_d, int *visited_d) {
 
 __device__ void setProbabilities(float *probabilities, int *visited_d,
                                  float *pheromones_d, int previousCity,
-                                 int *distances_d, int ant, int thread,
-                                 int move) {
+                                 int *distances_d, int ant) {
   int nextCity = threadIdx.x;
 
   int active = nextCity < NUM_CITIES;
@@ -202,7 +201,7 @@ __global__ void antKernel(int *antPaths_d, int *visited_d, float *pheromones_d,
     __shared__ float probabilities[NUM_CITIES];
 
     setProbabilities(probabilities, visited_d, pheromones_d, previousCity,
-                     distances_d, ant, threadIdx.x, move);
+                     distances_d, ant);
 
     __syncthreads();
 
