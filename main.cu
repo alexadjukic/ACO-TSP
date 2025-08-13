@@ -7,12 +7,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#define NUM_CITIES 33
+#define NUM_CITIES 100
 #define MIN_DISTANCE 10
 #define MAX_DISTANCE 500
-#define NUM_ANTS 33
-// #define NUM_ITERATIONS 100 * NUM_CITIES
-#define NUM_ITERATIONS 1
+#define NUM_ANTS 100
+#define NUM_ITERATIONS 100 * NUM_CITIES
 #define ALPHA 1
 #define BETA 1
 #define EVAPORATION_RATE 0.3
@@ -86,9 +85,9 @@ __global__ void initPheromonesKernel(float *pheromones_d) {
   }
 }
 
-__device__ void decideNext(float *probabilities, curandState state,
+__device__ void decideNext(float *probabilities, curandState *state,
                            int *output) {
-  float decision = curand_uniform(&state);
+  float decision = curand_uniform(state);
 
   float sum = 0;
   for (int i = 0; i < NUM_CITIES; i++) {
@@ -113,7 +112,7 @@ void printPath(int path[NUM_CITIES]) {
 
 __global__ void evaporatePheromonesKernel(float *pheromones_d) {
   int i = blockIdx.x;
-  int j = threadIdx.y;
+  int j = threadIdx.x;
 
   if (j < NUM_CITIES) {
     pheromones_d[i * NUM_CITIES + j] *= (1 - EVAPORATION_RATE);
@@ -159,8 +158,6 @@ __device__ void setProbabilities(float *probabilities, int *visited_d,
                                  int move) {
   int nextCity = threadIdx.x;
 
-  // if (nextCity >= NUM_CITIES)
-  //   return;
   int active = nextCity < NUM_CITIES;
 
   if (active) {
@@ -176,13 +173,6 @@ __device__ void setProbabilities(float *probabilities, int *visited_d,
 
   __syncthreads();
 
-  // if (ant == 0 && thread == 31 && move == 1) {
-  //   for (int i = 0; i < NUM_CITIES; i++) {
-  //     printf("%f ", probabilities[i]);
-  //   }
-  //   printf("\n");
-  // }
-
   float sumProbabilities = 0.0;
   if (active) {
     for (int i = 0; i < NUM_CITIES; i++) {
@@ -192,38 +182,20 @@ __device__ void setProbabilities(float *probabilities, int *visited_d,
 
   __syncthreads();
 
-  // if (ant == 0 &&
-  //     (thread == 96 || thread == 32 || thread == 20 || thread == 33) &&
-  //     move == 1) {
-  //   printf("thread: %d SUM: %f\n", thread, sumProbabilities);
-  // }
-
   if (active) {
-    if (thread == 32 && move == 1 && ant == 0) {
-      printf("Dividing: %f / %f = %f\n", probabilities[nextCity],
-             sumProbabilities, probabilities[nextCity] / sumProbabilities);
-    }
     probabilities[nextCity] /= sumProbabilities;
   }
 
   __syncthreads();
-
-  // if (ant == 21 && thread == 32) {
-  //   float sum = 0.0;
-  //   printf("Inside func\n");
-  //   for (int i = 0; i < NUM_CITIES; i++) {
-  //     sum += probabilities[i];
-  //     printf("%f ", probabilities[i]);
-  //   }
-  //   printf("\n");
-  //   printf("SUM: %f\n", sum);
-  // }
 }
 
 __global__ void antKernel(int *antPaths_d, int *visited_d, float *pheromones_d,
-                          int *distances_d, int *antPathLengths_d) {
+                          int *distances_d, int *antPathLengths_d,
+                          unsigned long long seed) {
   int ant = blockIdx.x;
   int pathLenght = 0;
+  curandState d_state;
+  curand_init(seed, ant, 0, &d_state);
 
   for (int move = 1; move < NUM_CITIES; move++) {
     int previousCity = antPaths_d[ant * NUM_CITIES + move - 1];
@@ -232,27 +204,11 @@ __global__ void antKernel(int *antPaths_d, int *visited_d, float *pheromones_d,
     setProbabilities(probabilities, visited_d, pheromones_d, previousCity,
                      distances_d, ant, threadIdx.x, move);
 
-    if (ant == 4 && threadIdx.x == 32) {
-      float sum = 0.0;
-      for (int i = 0; i < NUM_CITIES; i++) {
-        sum += probabilities[i];
-        printf("%f ", probabilities[i]);
-      }
-      printf("\n");
-      printf("SUM: %f\n", sum);
-      for (int i = 0; i < NUM_CITIES; i++) {
-        printf("%d ", visited_d[ant * NUM_CITIES + i]);
-      }
-      printf("\n");
-    }
-
     __syncthreads();
 
     if (threadIdx.x == 0) {
-      curandState d_state;
-      curand_init(1237, blockIdx.x, 0, &d_state);
       int nextCity;
-      decideNext(probabilities, d_state, &nextCity);
+      decideNext(probabilities, &d_state, &nextCity);
       antPaths_d[ant * NUM_CITIES + move] = nextCity;
       visited_d[ant * NUM_CITIES + nextCity] = 1;
       pathLenght += distances_d[previousCity * NUM_CITIES + nextCity];
@@ -305,18 +261,12 @@ void aco(int distances[NUM_CITIES][NUM_CITIES]) {
     initAntStatesKernel<<<NUM_ANTS, 128>>>(antPaths_d, visited_d);
 
     antKernel<<<NUM_ANTS, 128>>>(antPaths_d, visited_d, pheromones_d,
-                                 distances_d, antPathLengths_d);
+                                 distances_d, antPathLengths_d, iterNum);
 
     cudaCheckError(
         cudaMemcpy(antPaths, antPaths_d, sizePerAnt, cudaMemcpyDeviceToHost));
     cudaCheckError(cudaMemcpy(antPathLengths, antPathLengths_d,
                               NUM_ANTS * sizeof(int), cudaMemcpyDeviceToHost));
-
-    for (int ant = 0; ant < NUM_ANTS; ant++) {
-      printf("Ant: %d: ", ant);
-      printPath(antPaths[ant]);
-      printf("\nLen: %d\n", antPathLengths[ant]);
-    }
 
     int bestAnt = -1;
     for (int ant = 0; ant < NUM_ANTS; ant++) {
